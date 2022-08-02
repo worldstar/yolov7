@@ -153,6 +153,14 @@ python detect.py --weights yolov7.pt --conf 0.25 --img-size 640 --source inferen
 </div>
 
 
+## Detect
+
+Added detect2.py for an save_absolute_txt format output  
+Save_absolute_txt format is added for calculating the mAP in Anoconda which have bugs using the normal save_txt output
+```shell
+python detect.py --weights ./runs/train/yolov7/weights/best.pt --img 416 --conf 0.4 --source ../yolov7/test/images --save-absolute-txt --save-conf
+```
+
 ## Export
 
 
