@@ -579,7 +579,8 @@ class ComputeLoss:
             gi, gj = gij.T  # grid xy indices
 
             # theta Classification by Circular Smooth Label
-            t_theta = tgaussian_theta[i].type(ps.dtype) # target theta_gaussian_labels
+            #t_theta = tgaussian_theta[i].type(ps.dtype) # target theta_gaussian_labels
+            t_theta = tgaussian_theta[i].type(float) # target theta_gaussian_labels, by Supasin W. on 111.12.13
             ltheta += self.BCEtheta(ps[:, class_index:], t_theta)
 
             # Append
@@ -685,7 +686,8 @@ class ComputeLossOTA:
         bs = tobj.shape[0]  # batch size
 
         loss = lbox + lobj + lcls + ltheta
-        return loss * bs, torch.cat((lbox, lobj, lcls, ltheta, loss)).detach()
+        #return loss * bs, torch.cat((lbox, lobj, lcls, ltheta, loss)).detach()
+        return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
 
     def build_targets(self, p, targets, imgs):
         
