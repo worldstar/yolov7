@@ -521,8 +521,8 @@ class ComputeLoss:
         # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
         na, nt = self.na, targets.shape[0]  # number of anchors, targets
         tcls, tbox, indices, anch = [], [], [], []
-        # ttheta, tgaussian_theta = [], []
-        tgaussian_theta = []
+        t_theta, tgaussian_theta = [], []
+        # tgaussian_theta = []
         # gain = torch.ones(7, device=targets.device)  # normalized to gridspace gain
         feature_wh = torch.ones(7, device=targets.device)  # feature_wh
         gain = torch.ones(7, device=targets.device).long()
@@ -577,11 +577,6 @@ class ComputeLoss:
             gaussian_theta_labels = t[:, 7:-1]
             gij = (gxy - offsets).long()
             gi, gj = gij.T  # grid xy indices
-
-            # theta Classification by Circular Smooth Label
-            #t_theta = tgaussian_theta[i].type(ps.dtype) # target theta_gaussian_labels
-            t_theta = tgaussian_theta[i].type(float) # target theta_gaussian_labels, by Supasin W. on 111.12.13
-            ltheta += self.BCEtheta(ps[:, class_index:], t_theta)
 
             # Append
             #a = t[:, 6].long()  # anchor indices
