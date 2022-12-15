@@ -30,9 +30,13 @@ from copy import deepcopy
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 
+from utils.augmentations import Albumentations, augment_hsv, copy_paste, letterbox, mixup, random_perspective
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
+from utils.general import (LOGGER, NUM_THREADS, check_dataset, check_requirements, check_yaml, clean_str,
+                           segments2boxes, xyn2xy, xywh2xyxy, xywhn2xyxy, xyxy2xywhn)
 from utils.torch_utils import torch_distributed_zero_first
+from utils.rboxs_utils import poly_filter, poly2rbox
 
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
@@ -386,6 +390,67 @@ def img2label_paths(img_paths):
     # Define label paths as a function of image paths
     sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
     return ['txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1)) for x in img_paths]
+
+def verify_image_label(args):
+    # Verify one image-label pair
+    im_file, lb_file, prefix, cls_name_list = args
+    nm, nf, ne, nc, msg, segments = 0, 0, 0, 0, '', []  # number (missing, found, empty, corrupt), message, segments
+    try:
+        # verify images
+        im = Image.open(im_file)
+        im.verify()  # PIL verify
+        shape = exif_size(im)  # image size
+        assert (shape[0] > 9) & (shape[1] > 9), f'image size {shape} <10 pixels'
+        assert im.format.lower() in IMG_FORMATS, f'invalid image format {im.format}'
+        if im.format.lower() in ('jpg', 'jpeg'):
+            with open(im_file, 'rb') as f:
+                f.seek(-2, 2)
+                if f.read() != b'\xff\xd9':  # corrupt JPEG
+                    ImageOps.exif_transpose(Image.open(im_file)).save(im_file, 'JPEG', subsampling=0, quality=100)
+                    msg = f'{prefix}WARNING: {im_file}: corrupt JPEG restored and saved'
+
+        # verify labels
+        if os.path.isfile(lb_file):
+            nf = 1  # label found
+            with open(lb_file) as f:
+                labels = [x.split() for x in f.read().strip().splitlines() if len(x)]
+
+                # Yolov5-obb does not support segment labels yet
+                # if any([len(x) > 8 for x in l]):  # is segment
+                #     classes = np.array([x[0] for x in l], dtype=np.float32)
+                #     segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in l]  # (cls, xy1...)
+                #     l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
+                l_ = []
+                for label in labels:
+                    if label[-1] == "2": # diffcult
+                        continue
+                    cls_id = cls_name_list.index(label[8])
+                    l_.append(np.concatenate((cls_id, label[:8]), axis=None))
+                l = np.array(l_, dtype=np.float32)
+            nl = len(l)
+            if nl:
+                assert len(label) == 10, f'Yolov5-OBB labels require 10 columns, which same as DOTA Dataset, {len(label)} columns detected'
+                assert (l >= 0).all(), f'negative label values {l[l < 0]}, please check your dota format labels'
+                #assert (l[:, 1:] <= 1).all(), f'non-normalized or out of bounds coordinates {l[:, 1:][l[:, 1:] > 1]}'
+                _, i = np.unique(l, axis=0, return_index=True)
+                if len(i) < nl:  # duplicate row check
+                    l = l[i]  # remove duplicates
+                    if segments:
+                        segments = segments[i]
+                    msg = f'{prefix}WARNING: {im_file}: {nl - len(i)} duplicate labels removed'
+            else:
+                ne = 1  # label empty
+                # l = np.zeros((0, 5), dtype=np.float32)
+                l = np.zeros((0, 9), dtype=np.float32)
+        else:
+            nm = 1  # label missing
+            # l = np.zeros((0, 5), dtype=np.float32)
+            l = np.zeros((0, 9), dtype=np.float32)
+        return im_file, l, shape, segments, nm, nf, ne, nc, msg
+    except Exception as e:
+        nc = 1
+        msg = f'{prefix}WARNING: {im_file}: ignoring corrupt image/label: {e}'
+        return [None, None, None, None, nm, nf, ne, nc, msg]
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
@@ -795,9 +860,10 @@ def load_mosaic(self, index):
     s = self.img_size
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    random.shuffle(indices)
     for i, index in enumerate(indices):
         # Load image
-        img, _, (h, w), img_label = load_image(self, index)
+        img, _, (h, w), img_label = load_image_label(self, index)
 
         # place img in img4
         if i == 0:  # top left
@@ -864,6 +930,7 @@ def load_mosaic9(self, index):
     labels9, segments9 = [], []
     s = self.img_size
     indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    random.shuffle(indices)
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -896,8 +963,13 @@ def load_mosaic9(self, index):
         # Labels
         labels, segments = self.labels[index].copy(), self.segments[index].copy()
         if labels.size:
-            labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padx, pady)  # normalized xywh to pixel xyxy format
+            # labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padx, pady)  # normalized xywh to pixel xyxy format
             segments = [xyn2xy(x, w, h, padx, pady) for x in segments]
+            labels_ = labels.clone() if isinstance(labels, torch.Tensor) else np.copy(labels)
+            labels_[:, [1, 3, 5, 7]] = labels[:, [1, 3, 5, 7]] + padx
+            labels_[:, [2, 4, 6, 8]] = labels[:, [2, 4, 6, 8]] + pady
+            labels = labels_
+
         labels9.append(labels)
         segments9.extend(segments)
 
@@ -911,13 +983,21 @@ def load_mosaic9(self, index):
 
     # Concat/clip labels
     labels9 = np.concatenate(labels9, 0)
-    labels9[:, [1, 3]] -= xc
-    labels9[:, [2, 4]] -= yc
+    # labels9[:, [1, 3]] -= xc
+    # labels9[:, [2, 4]] -= yc
+    labels9[:, [1, 3, 5, 7]] -= xc
+    labels9[:, [2, 4, 6, 8]] -= yc
+
     c = np.array([xc, yc])  # centers
     segments9 = [x - c for x in segments9]
 
     for x in (labels9[:, 1:], *segments9):
         np.clip(x, 0, 2 * s, out=x)  # clip when using random_perspective()
+
+    h_filter = 2 * s
+    w_filter = 2 * s
+    labels_mask = poly_filter(polys=labels9[:, 1:].copy(), h=h_filter, w=w_filter)
+    labels9 = labels9[labels_mask]
     # img9, labels9 = replicate(img9, labels9)  # replicate
 
     # Augment
