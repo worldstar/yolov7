@@ -33,7 +33,7 @@ from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 from utils.augmentations import Albumentations, augment_hsv, copy_paste, letterbox, mixup, random_perspective
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
-from utils.general import (LOGGER, NUM_THREADS, check_dataset, check_requirements, check_yaml, clean_str,
+from utils.general import (NUM_THREADS, check_dataset, check_requirements, check_yaml, clean_str,
                            segments2boxes, xyn2xy, xywh2xyxy, xywhn2xyxy, xyxy2xywhn)
 from utils.torch_utils import torch_distributed_zero_first
 from utils.rboxs_utils import poly_filter, poly2rbox
@@ -43,6 +43,12 @@ help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
 vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
 logger = logging.getLogger(__name__)
+
+# Parameters
+HELP_URL = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
+IMG_FORMATS = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
+VID_FORMATS = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
+WORLD_SIZE = int(os.getenv('WORLD_SIZE', 1))  # DPP
 
 # Get orientation exif tag
 for orientation in ExifTags.TAGS.keys():
@@ -97,9 +103,9 @@ def exif_transpose(image):
     return image
 
 def create_dataloader(path, imgsz, batch_size, stride, names, single_cls=False, hyp=None, augment=False, cache=False, pad=0.0,
-                      rect=False, world_size=1, rank=-1, workers=8, image_weights=False, quad=False, prefix='', shuffle=False):
+                      rect=False, rank=-1, workers=8, image_weights=False, quad=False, prefix='', shuffle=False):
     if rect and shuffle:
-        print('WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False')
+        logger.warning('WARNING: --rect is incompatible with DataLoader shuffle, setting shuffle=False')
         shuffle = False
     with torch_distributed_zero_first(rank):  # init dataset *.cache only once if DDP
         dataset = LoadImagesAndLabels(path, names, imgsz, batch_size,
@@ -114,17 +120,16 @@ def create_dataloader(path, imgsz, batch_size, stride, names, single_cls=False, 
                                       prefix=prefix)
 
     batch_size = min(batch_size, len(dataset))
-    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+    nw = min([os.cpu_count() // WORLD_SIZE, batch_size if batch_size > 1 else 0, workers])  # number of workers
     sampler = None if rank == -1 else distributed.DistributedSampler(dataset, shuffle=shuffle)
-    loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
-    # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
+    loader = DataLoader if image_weights else InfiniteDataLoader  # only DataLoader allows for attribute updates
     dataloader = loader(dataset,
-                        batch_size=batch_size,
-                        shuffle=shuffle and sampler is None,
-                        num_workers=nw,
-                        sampler=sampler,
-                        pin_memory=True,
-                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
+                  batch_size=batch_size,
+                  shuffle=shuffle and sampler is None,
+                  num_workers=nw,
+                  sampler=sampler,
+                  pin_memory=True,
+                  collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn), dataset
     return dataloader, dataset
 
 
