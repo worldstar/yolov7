@@ -30,8 +30,7 @@ from utils.general import labels_to_class_weights, increment_path, labels_to_ima
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
-from utils.loss import ComputeLoss
-from utils.loss import ComputeLossOTA
+from utils.loss import ComputeLoss, ComputeLossOTA
 from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
@@ -556,20 +555,10 @@ if __name__ == '__main__':
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
-    #opt = parser.parse_args()
-
-    # Weights & Biases arguments
-    #parser.add_argument('--entity', default=None, help='W&B: Entity')
-    #parser.add_argument('--upload_dataset', nargs='?', const=True, default=False, help='W&B: Upload data, "val" option')
-    #parser.add_argument('--bbox_interval', type=int, default=-1, help='W&B: Set bounding-box image logging interval')
-    #parser.add_argument('--artifact_alias', type=str, default='latest', help='W&B: Version of dataset artifact to use')
-
     opt = parser.parse_args()
-    #return opt
 
     # Set DDP variables
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
-    #opt.world_size = 1
     opt.global_rank = int(os.environ['RANK']) if 'RANK' in os.environ else -1
     set_logging(opt.global_rank)
     #if opt.global_rank in [-1, 0]:
