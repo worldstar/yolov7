@@ -78,7 +78,7 @@ You will get the results:
  Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets=100 ] = 0.83868
 ```
 
-To measure accuracy, download [COCO-annotations for Pycocotools](http://images.cocodataset.org/annotations/annotations_trainval2017.zip).
+To measure accuracy, download [COCO-annotations for Pycocotools](http://images.cocodataset.org/annotations/annotations_trainval2017.zip) to the `./coco/annotations/instances_val2017.json`
 
 ## Training
 
@@ -128,12 +128,6 @@ python train_aux.py --workers 8 --device 0 --batch-size 16 --data data/custom.ya
 
 See [reparameterization.ipynb](tools/reparameterization.ipynb)
 
-## Pose estimation
-
-[`yolov7-w6-pose.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6-pose.pt)
-
-See [keypoint.ipynb](https://github.com/WongKinYiu/yolov7/blob/main/tools/keypoint.ipynb).
-
 ## Inference
 
 On video:
@@ -153,16 +147,9 @@ python detect.py --weights yolov7.pt --conf 0.25 --img-size 640 --source inferen
 </div>
 
 
-## Detect
-
-Added detect2.py for an save_absolute_txt format output  
-Save_absolute_txt format is added for calculating the mAP in Anoconda which have bugs using the normal save_txt output
-```shell
-python detect.py --weights ./runs/train/yolov7/weights/best.pt --img 416 --conf 0.4 --source ../yolov7/test/images --save-absolute-txt --save-conf
-```
-
 ## Export
 
+**Pytorch to CoreML (and inference on MacOS/iOS)** <a href="https://colab.research.google.com/github/WongKinYiu/yolov7/blob/main/tools/YOLOv7CoreML.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
 **Pytorch to ONNX with NMS (and inference)** <a href="https://colab.research.google.com/github/WongKinYiu/yolov7/blob/main/tools/YOLOv7onnx.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 ```shell
@@ -177,8 +164,6 @@ wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-tiny.pt
 python export.py --weights ./yolov7-tiny.pt --grid --end2end --simplify --topk-all 100 --iou-thres 0.65 --conf-thres 0.35 --img-size 640 640
 git clone https://github.com/Linaom1214/tensorrt-python.git
 python ./tensorrt-python/export.py -o yolov7-tiny.onnx -e yolov7-tiny-nms.trt -p fp16
-
-# example of inference in C++ https://github.com/Linaom1214/tensorrt-python/tree/main/yolov7/cpp
 ```
 
 **Pytorch to TensorRT another way** <a href="https://colab.research.google.com/gist/AlexeyAB/fcb47ae544cf284eb24d8ad8e880d45c/yolov7trtlinaom.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a> <details><summary> <b>Expand</b> </summary>
@@ -198,6 +183,51 @@ python ./tensorrt-python/export.py -o yolov7-tiny.onnx -e yolov7-tiny-nms.trt -p
 
 Tested with: Python 3.7.13, Pytorch 1.12.0+cu113
 
+## Pose estimation
+
+[`code`](https://github.com/WongKinYiu/yolov7/tree/pose) [`yolov7-w6-pose.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6-pose.pt)
+
+See [keypoint.ipynb](https://github.com/WongKinYiu/yolov7/blob/main/tools/keypoint.ipynb).
+
+<div align="center">
+    <a href="./">
+        <img src="./figure/pose.png" width="39%"/>
+    </a>
+</div>
+
+
+## Instance segmentation
+
+[`code`](https://github.com/WongKinYiu/yolov7/tree/mask) [`yolov7-mask.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-mask.pt)
+
+See [instance.ipynb](https://github.com/WongKinYiu/yolov7/blob/main/tools/instance.ipynb).
+
+<div align="center">
+    <a href="./">
+        <img src="./figure/mask.png" width="59%"/>
+    </a>
+</div>
+
+## Instance segmentation
+
+[`code`](https://github.com/WongKinYiu/yolov7/tree/u7/seg) [`yolov7-seg.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-seg.pt)
+
+YOLOv7 for instance segmentation (YOLOR + YOLOv5 + YOLACT)
+
+| Model | Test Size | AP<sup>box</sup> | AP<sub>50</sub><sup>box</sup> | AP<sub>75</sub><sup>box</sup> | AP<sup>mask</sup> | AP<sub>50</sub><sup>mask</sup> | AP<sub>75</sub><sup>mask</sup> |
+| :-- | :-: | :-: | :-: | :-: | :-: | :-: | :-: |
+| **YOLOv7-seg** | 640 | **51.4%** | **69.4%** | **55.8%** | **41.5%** | **65.5%** | **43.7%** |
+
+## Anchor free detection head
+
+[`code`](https://github.com/WongKinYiu/yolov7/tree/u6) [`yolov7-u6.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-u6.pt)
+
+YOLOv7 with decoupled TAL head (YOLOR + YOLOv5 + YOLOv6)
+
+| Model | Test Size | AP<sup>val</sup> | AP<sub>50</sub><sup>val</sup> | AP<sub>75</sub><sup>val</sup> |
+| :-- | :-: | :-: | :-: | :-: |
+| **YOLOv7-u6** | 640 | **52.6%** | **69.7%** | **57.3%** |
+
 
 ## Citation
 
@@ -210,16 +240,23 @@ Tested with: Python 3.7.13, Pytorch 1.12.0+cu113
 }
 ```
 
+
 ## Teaser
 
-Yolov7-mask & YOLOv7-pose
+Yolov7-semantic & YOLOv7-panoptic & YOLOv7-caption
 
 <div align="center">
     <a href="./">
-        <img src="./figure/mask.png" width="56%"/>
+        <img src="./figure/tennis.jpg" width="24%"/>
     </a>
     <a href="./">
-        <img src="./figure/pose.png" width="42%"/>
+        <img src="./figure/tennis_semantic.jpg" width="24%"/>
+    </a>
+    <a href="./">
+        <img src="./figure/tennis_panoptic.png" width="24%"/>
+    </a>
+    <a href="./">
+        <img src="./figure/tennis_caption.png" width="24%"/>
     </a>
 </div>
 
