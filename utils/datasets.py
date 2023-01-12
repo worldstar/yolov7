@@ -70,6 +70,7 @@ def exif_transpose(image):
     """
     Transpose a PIL image accordingly if it has an EXIF Orientation tag.
     Inplace version of https://github.com/python-pillow/Pillow/blob/master/src/PIL/ImageOps.py exif_transpose()
+
     :param image: The image to transpose.
     :return: An image.
     """
@@ -123,6 +124,7 @@ def create_dataloader(path, imgsz, batch_size, stride, names, single_cls=False, 
 
 class InfiniteDataLoader(dataloader.DataLoader):
     """ Dataloader that reuses workers
+
     Uses same syntax as vanilla DataLoader
     """
 
@@ -141,6 +143,7 @@ class InfiniteDataLoader(dataloader.DataLoader):
 
 class _RepeatSampler:
     """ Sampler that repeats forever
+
     Args:
         sampler (Sampler)
     """
@@ -381,6 +384,7 @@ class LoadImagesAndLabels(Dataset):
         Returns:
             Dataset.labels (list): n_imgs * array(num_gt_perimg, [cls_id, poly])
             Dataset.shapes (array): (n_imgs, [ori_img_width, ori_img_height])
+
             Dataset.batch_shapes (array): (n_batches, [h_rect, w_rect])
         """
         self.img_size = img_size

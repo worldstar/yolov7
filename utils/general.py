@@ -1,6 +1,5 @@
 # YOLOR general utils
 
-import contextlib
 import glob
 import logging
 import math
@@ -8,34 +7,20 @@ import os
 import platform
 import random
 import re
-import shutil
-import signal
 import subprocess
 import time
-import urllib
-from itertools import repeat
-from multiprocessing.pool import ThreadPool
 from pathlib import Path
-from subprocess import check_output
-from zipfile import ZipFile
 
 import cv2
 import numpy as np
 import pandas as pd
-import pkg_resources as pkg
 import torch
 import torchvision
 import yaml
-import zipfile
-import torch.nn as nn
 
 from utils.google_utils import gsutil_getsize
-from utils.metrics import box_iou, fitness
+from utils.metrics import fitness
 from utils.torch_utils import init_torch_seeds
-
-from utils.downloads import gsutil_getsize
-pi = 3.141592
-#from utils.nms_rotated import obb_nms
 
 # Settings
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
@@ -43,7 +28,6 @@ np.set_printoptions(linewidth=320, formatter={'float_kind': '{:11.5g}'.format}) 
 pd.options.display.max_columns = 10
 cv2.setNumThreads(0)  # prevent OpenCV from multithreading (incompatible with PyTorch DataLoader)
 os.environ['NUMEXPR_MAX_THREADS'] = str(min(os.cpu_count(), 8))  # NumExpr max threads
-NUM_THREADS = min(8, max(1, os.cpu_count() - 1))  # number of YOLOv5 multiprocessing threads
 
 
 def set_logging(rank=-1):
@@ -51,7 +35,6 @@ def set_logging(rank=-1):
         format="%(message)s",
         level=logging.INFO if rank in [-1, 0] else logging.WARN)
 
-LOGGER = set_logging(__name__)  # define globally (used in train.py, val.py, detect.py, etc.)
 
 def init_seeds(seed=0):
     # Initialize random number generator (RNG) seeds
@@ -85,24 +68,6 @@ def check_online():
     except OSError:
         return False
 
-def check_python(minimum='3.6.2'):
-    # Check current python version vs. required python version
-    check_version(platform.python_version(), minimum, name='Python ', hard=True)
-
-def check_version(current='0.0.0', minimum='0.0.0', name='version ', pinned=False, hard=False, verbose=False):
-    # Check version vs. required version
-    current, minimum = (pkg.parse_version(x) for x in (current, minimum))
-    result = (current == minimum) if pinned else (current >= minimum)  # bool
-    s = f'{name}{minimum} required by YOLOv5, but {name}{current} is currently installed'  # string
-    if hard:
-        assert result, s  # assert min requirements met
-    if verbose and not result:
-        LOGGER.warning(s)
-    return result
-
-def check_yaml(file, suffix=('.yaml', '.yml')):
-    # Search/download YAML file (if necessary) and return path, checking suffix
-    return check_file(file, suffix)
 
 def check_git_status():
     # Recommend 'git pull' if code is out of date
@@ -187,84 +152,26 @@ def check_file(file):
         assert len(files) == 1, f"Multiple files match '{file}', specify exact path: {files}"  # assert unique
         return files[0]  # return file
 
-def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
-    # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
-    with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
-                                      augment=augment,  # augment images
-                                      hyp=hyp,  # augmentation hyperparameters
-                                      rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      single_cls=opt.single_cls,
-                                      stride=int(stride),
-                                      pad=pad,
-                                      image_weights=image_weights,
-                                      prefix=prefix,)
 
-    batch_size = min(batch_size, len(dataset))
-    nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
-    sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
-    loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
-    # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
-    dataloader = loader(dataset,
-                        batch_size=batch_size,
-                        num_workers=nw,
-                        sampler=sampler,
-                        pin_memory=True,
-                        collate_fn=LoadImagesAndLabels.collate_fn4 if quad else LoadImagesAndLabels.collate_fn)
-    return dataloader, dataset
-
-def check_dataset(data, autodownload=True):
-    # Download and/or unzip dataset if not found locally
-    # Usage: https://github.com/ultralytics/yolov5/releases/download/v1.0/coco128_with_yaml.zip
-
-    # Download (optional)
-    extract_dir = ''
-    if isinstance(data, (str, Path)) and str(data).endswith('.zip'):  # i.e. gs://bucket/dir/coco128.zip
-        download(data, dir='../datasets', unzip=True, delete=False, curl=False, threads=1)
-        data = next((Path('../datasets') / Path(data).stem).rglob('*.yaml'))
-        extract_dir, autodownload = data.parent, False
-
-    # Read yaml (optional)
-    if isinstance(data, (str, Path)):
-        with open(data, errors='ignore') as f:
-            data = yaml.safe_load(f)  # dictionary
-
-    # Parse yaml
-    path = extract_dir or Path(data.get('path') or '')  # optional 'path' default to '.'
-    for k in 'train', 'val', 'test':
-        if data.get(k):  # prepend path
-            data[k] = str(path / data[k]) if isinstance(data[k], str) else [str(path / x) for x in data[k]]
-
-    assert 'nc' in data, "Dataset 'nc' key missing."
-    if 'names' not in data:
-        data['names'] = [f'class{i}' for i in range(data['nc'])]  # assign class names if missing
-    train, val, test, s = (data.get(x) for x in ('train', 'val', 'test', 'download'))
-    if val:
+def check_dataset(dict):
+    # Download dataset if not found locally
+    val, s = dict.get('val'), dict.get('download')
+    if val and len(val):
         val = [Path(x).resolve() for x in (val if isinstance(val, list) else [val])]  # val path
         if not all(x.exists() for x in val):
             print('\nWARNING: Dataset not found, nonexistent paths: %s' % [str(x) for x in val if not x.exists()])
-            if s and autodownload:  # download script
-                root = path.parent if 'path' in data else '..'  # unzip directory i.e. '../'
+            if s and len(s):  # download script
+                print('Downloading %s ...' % s)
                 if s.startswith('http') and s.endswith('.zip'):  # URL
                     f = Path(s).name  # filename
-                    print(f'Downloading {s} to {f}...')
                     torch.hub.download_url_to_file(s, f)
-                    Path(root).mkdir(parents=True, exist_ok=True)  # create root
-                    ZipFile(f).extractall(path=root)  # unzip
-                    Path(f).unlink()  # remove zip
-                    r = None  # success
-                elif s.startswith('bash '):  # bash script
-                    print(f'Running {s} ...')
+                    r = os.system('unzip -q %s -d ../ && rm %s' % (f, f))  # unzip
+                else:  # bash script
                     r = os.system(s)
-                else:  # python script
-                    r = exec(s, {'yaml': data})  # return None
-                print(f"Dataset autodownload {f'success, saved to {root}' if r in (0, None) else 'failure'}\n")
+                print('Dataset autodownload %s\n' % ('success' if r == 0 else 'failure'))  # analyze return value
             else:
                 raise Exception('Dataset not found.')
 
-    return data  # dictionary
 
 def make_divisible(x, divisor):
     # Returns x evenly divisible by divisor
@@ -312,7 +219,7 @@ def labels_to_class_weights(labels, nc=80):
         return torch.Tensor()
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+    classes = labels[:, 0].astype(np.int32)  # labels = [class xywh]
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
@@ -327,7 +234,7 @@ def labels_to_class_weights(labels, nc=80):
 
 def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
     # Produces image weights based on class_weights and image contents
-    class_counts = np.array([np.bincount(x[:, 0].astype(np.int), minlength=nc) for x in labels])
+    class_counts = np.array([np.bincount(x[:, 0].astype(np.int32), minlength=nc) for x in labels])
     image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
     # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
     return image_weights
@@ -344,16 +251,6 @@ def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
          64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
     return x
 
-def xyxy2xywhr(x):
-    # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right
-    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-    y[:, 0] = (x[:, 0] + x[:, 2]) / 2  # x center
-    y[:, 1] = (x[:, 1] + x[:, 3]) / 2  # y center
-    y[:, 2] = x[:, 2] - x[:, 0]  # width
-    y[:, 3] = x[:, 3] - x[:, 1]  # height
-    y[:, 4] = torch.atan(y[:, 2] / y[:, 3])
-
-    return y
 
 def xyxy2xywh(x):
     # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] where xy1=top-left, xy2=bottom-right
@@ -364,6 +261,7 @@ def xyxy2xywh(x):
     y[:, 3] = x[:, 3] - x[:, 1]  # height
     return y
 
+
 def xywh2xyxy(x):
     # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
     y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
@@ -372,6 +270,7 @@ def xywh2xyxy(x):
     y[:, 2] = x[:, 0] + x[:, 2] / 2  # bottom right x
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
+
 
 def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
     # Convert nx4 boxes from [x, y, w, h] normalized to [x1, y1, x2, y2] where xy1=top-left, xy2=bottom-right
@@ -382,16 +281,6 @@ def xywhn2xyxy(x, w=640, h=640, padw=0, padh=0):
     y[:, 3] = h * (x[:, 1] + x[:, 3] / 2) + padh  # bottom right y
     return y
 
-def xyxy2xywhn(x, w=640, h=640, clip=False, eps=0.0):
-    # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h] normalized where xy1=top-left, xy2=bottom-right
-    if clip:
-        clip_coords(x, (h - eps, w - eps))  # warning: inplace clip
-    y = x.clone() if isinstance(x, torch.Tensor) else np.copy(x)
-    y[:, 0] = ((x[:, 0] + x[:, 2]) / 2) / w  # x center
-    y[:, 1] = ((x[:, 1] + x[:, 3]) / 2) / h  # y center
-    y[:, 2] = (x[:, 2] - x[:, 0]) / w  # width
-    y[:, 3] = (x[:, 3] - x[:, 1]) / h  # height
-    return 
 
 def xyn2xy(x, w=640, h=640, padw=0, padh=0):
     # Convert normalized segments into pixel segments, shape (n,2)
@@ -400,30 +289,6 @@ def xyn2xy(x, w=640, h=640, padw=0, padh=0):
     y[:, 1] = h * x[:, 1] + padh  # top left y
     return y
 
-def xywhr2xysigma(xywhr):
-    """Convert oriented bounding box to 2-D Gaussian distribution.
-    Args:
-        xywhr (torch.Tensor): rbboxes with shape (N, 5).
-    Returns:
-        xy (torch.Tensor): center point of 2-D Gaussian distribution
-            with shape (N, 2).
-        sigma (torch.Tensor): covariance matrix of 2-D Gaussian distribution
-            with shape (N, 2, 2).
-    """
-    _shape = xywhr.shape
-    assert _shape[-1] == 5
-    xy = xywhr[..., :2]
-    wh = xywhr[..., 2:4].clamp(min=1e-7, max=1e7).reshape(-1, 2)
-    r = xywhr[..., 4]
-    cos_r = torch.cos(r)
-    sin_r = torch.sin(r)
-    R = torch.stack((cos_r, -sin_r, sin_r, cos_r), dim=-1).reshape(-1, 2, 2)
-    S = 0.5 * torch.diag_embed(wh)
-
-    sigma = R.bmm(S.square()).bmm(R.permute(0, 2,
-                                            1)).reshape(_shape[:-1] + (2, 2))
-
-    return xy, sigma
 
 def segment2box(segment, width=640, height=640):
     # Convert 1 segment label to 1 box label, applying inside-image constraint, i.e. (xy1, xy2, ...) to (xyxy)
@@ -445,6 +310,7 @@ def segments2boxes(segments):
 def resample_segments(segments, n=1000):
     # Up-sample an (n,2) segment
     for i, s in enumerate(segments):
+        s = np.concatenate((s, s[0:1, :]), axis=0)
         x = np.linspace(0, len(s) - 1, n)
         xp = np.arange(len(s))
         segments[i] = np.concatenate([np.interp(x, xp, s[:, i]) for i in range(2)]).reshape(2, -1).T  # segment xy
@@ -474,127 +340,8 @@ def clip_coords(boxes, img_shape):
     boxes[:, 2].clamp_(0, img_shape[1])  # x2
     boxes[:, 3].clamp_(0, img_shape[0])  # y2
 
-#weighted_loss
-def kfiou_loss(pred,
-               target,
-               pred_decode=None,
-               targets_decode=None,
-               fun=None,
-               beta=1.0 / 9.0,
-               eps=1e-6):
-    """Kalman filter IoU loss.
-    Args:
-        pred (torch.Tensor): Predicted bboxes.
-        target (torch.Tensor): Corresponding gt bboxes.
-        pred_decode (torch.Tensor): Predicted decode bboxes.
-        targets_decode (torch.Tensor): Corresponding gt decode bboxes.
-        fun (str): The function applied to distance. Defaults to None.
-        beta (float): Defaults to 1.0/9.0.
-        eps (float): Defaults to 1e-6.
-    Returns:
-        loss (torch.Tensor)
-    """
-    xy_p = pred[:, :2]
-    xy_t = target[:, :2]
-    _, Sigma_p = xywhr2xysigma(pred_decode)
-    _, Sigma_t = xywhr2xysigma(targets_decode)
 
-    # Smooth-L1 norm
-    diff = torch.abs(xy_p - xy_t)
-    xy_loss = torch.where(diff < beta, 0.5 * diff * diff / beta,
-                          diff - 0.5 * beta).sum(dim=-1)
-    Vb_p = 4 * Sigma_p.det().sqrt()
-    Vb_t = 4 * Sigma_t.det().sqrt()
-    K = Sigma_p.bmm((Sigma_p + Sigma_t).inverse())
-    Sigma = Sigma_p - K.bmm(Sigma_p)
-    Vb = 4 * Sigma.det().sqrt()
-    Vb = torch.where(torch.isnan(Vb), torch.full_like(Vb, 0), Vb)
-    KFIoU = Vb / (Vb_p + Vb_t - Vb + eps)
-
-    if fun == 'ln':
-        kf_loss = -torch.log(KFIoU + eps)
-    elif fun == 'exp':
-        kf_loss = torch.exp(1 - KFIoU) - 1
-    else:
-        kf_loss = 1 - KFIoU
-
-    loss = (xy_loss + kf_loss).clamp(0)
-
-    return loss
-
-
-#ROTATED_LOSSES.register_module()
-class KFLoss(nn.Module):
-    """Kalman filter based loss.
-    Args:
-        fun (str, optional): The function applied to distance.
-            Defaults to 'log1p'.
-        reduction (str, optional): The reduction method of the
-            loss. Defaults to 'mean'.
-        loss_weight (float, optional): The weight of loss. Defaults to 1.0.
-    Returns:
-        loss (torch.Tensor)
-    """
-
-    def __init__(self,
-                 fun='none',
-                 reduction='mean',
-                 loss_weight=1.0,
-                 **kwargs):
-        super(KFLoss, self).__init__()
-        assert reduction in ['none', 'sum', 'mean']
-        assert fun in ['none', 'ln', 'exp']
-        self.fun = fun
-        self.reduction = reduction
-        self.loss_weight = loss_weight
-
-    def forward(self,
-                pred,
-                target,
-                weight=None,
-                avg_factor=None,
-                pred_decode=None,
-                targets_decode=None,
-                reduction_override=None,
-                **kwargs):
-        """Forward function.
-        Args:
-            pred (torch.Tensor): Predicted convexes.
-            target (torch.Tensor): Corresponding gt convexes.
-            weight (torch.Tensor, optional): The weight of loss for each
-                prediction. Defaults to None.
-            avg_factor (int, optional): Average factor that is used to average
-                the loss. Defaults to None.
-            pred_decode (torch.Tensor): Predicted decode bboxes.
-            targets_decode (torch.Tensor): Corresponding gt decode bboxes.
-            reduction_override (str, optional): The reduction method used to
-               override the original reduction method of the loss.
-               Defaults to None.
-        Returns:
-            loss (torch.Tensor)
-        """
-        assert reduction_override in (None, 'none', 'mean', 'sum')
-        reduction = (
-            reduction_override if reduction_override else self.reduction)
-        if (weight is not None) and (not torch.any(weight > 0)) and (
-                reduction != 'none'):
-            return (pred * weight).sum()
-        if weight is not None and weight.dim() > 1:
-            assert weight.shape == pred.shape
-            weight = weight.mean(-1)
-
-        return kfiou_loss(
-            pred,
-            target,
-            fun=self.fun,
-            weight=weight,
-            avg_factor=avg_factor,
-            pred_decode=pred_decode,
-            targets_decode=targets_decode,
-            reduction=reduction,
-            **kwargs) * self.loss_weight
-
-def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, KFIoU=False, eps=1e-7):
+def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, eps=1e-7):
     # Returns the IoU of box1 to box2. box1 is 4, box2 is nx4
     box2 = box2.T
 
@@ -619,53 +366,25 @@ def bbox_iou(box1, box2, x1y1x2y2=True, GIoU=False, DIoU=False, CIoU=False, KFIo
 
     iou = inter / union
 
-    if GIoU or DIoU or CIoU or KFIoU:
+    if GIoU or DIoU or CIoU:
         cw = torch.max(b1_x2, b2_x2) - torch.min(b1_x1, b2_x1)  # convex (smallest enclosing box) width
         ch = torch.max(b1_y2, b2_y2) - torch.min(b1_y1, b2_y1)  # convex height
-        if GIoU or CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
+        if CIoU or DIoU:  # Distance or Complete IoU https://arxiv.org/abs/1911.08287v1
             c2 = cw ** 2 + ch ** 2 + eps  # convex diagonal squared
             rho2 = ((b2_x1 + b2_x2 - b1_x1 - b1_x2) ** 2 +
                     (b2_y1 + b2_y2 - b1_y1 - b1_y2) ** 2) / 4  # center distance squared
             if DIoU:
-                return iou - rho2 / c2, 0  # DIoU
+                return iou - rho2 / c2  # DIoU
             elif CIoU:  # https://github.com/Zzh-tju/DIoU-SSD-pytorch/blob/master/utils/box/box_utils.py#L47
                 v = (4 / math.pi ** 2) * torch.pow(torch.atan(w2 / (h2 + eps)) - torch.atan(w1 / (h1 + eps)), 2)
                 with torch.no_grad():
                     alpha = v / (v - iou + (1 + eps))
-                return iou - (rho2 / c2 + v * alpha), 0  # CIoU
-            else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
-                c_area = cw * ch + eps  # convex area
-                return iou - (c_area - union) / c_area, 0 # GIoU
-        else: #KFIoU
-            xy_p, _ = xywhr2xysigma(box1)
-            xy_t, _ = xywhr2xysigma(box2)
-            _, Sigma_p = xywhr2xysigma(box1)
-            _, Sigma_t = xywhr2xysigma(box2)
-
-            # Smooth-L1 norm
-            diff = torch.abs(xy_p - xy_t)
-            xy_loss = torch.where(diff < beta, 0.5 * diff * diff / beta,
-                                diff - 0.5 * beta).sum(dim=-1)
-            Vb_p = 4 * Sigma_p.det().sqrt()
-            Vb_t = 4 * Sigma_t.det().sqrt()
-            K = Sigma_p.bmm((Sigma_p + Sigma_t).inverse())
-            Sigma = Sigma_p - K.bmm(Sigma_p)
-            Vb = 4 * Sigma.det().sqrt()
-            Vb = torch.where(torch.isnan(Vb), torch.full_like(Vb, 0), Vb)
-            KFIoU = Vb / (Vb_p + Vb_t - Vb + eps)
-
-            if fun == 'ln':
-                kf_loss = -torch.log(KFIoU + eps)
-            elif fun == 'exp':
-                kf_loss = torch.exp(1 - KFIoU) - 1
-            else:
-                kf_loss = 1 - KFIoU
-
-            loss = (xy_loss + kf_loss).clamp(0)
-            return KFIoU, loss
-        
+                return iou - (rho2 / c2 + v * alpha)  # CIoU
+        else:  # GIoU https://arxiv.org/pdf/1902.09630.pdf
+            c_area = cw * ch + eps  # convex area
+            return iou - (c_area - union) / c_area  # GIoU
     else:
-        return iou, 0  # IoU
+        return iou  # IoU
 
 
 
